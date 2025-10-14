@@ -2,14 +2,14 @@
 import {IsNotEmpty, IsString} from "class-validator"
 export class RegisterUserDto {
     @IsNotEmpty()
-    name:String;
+    name:string;
 
     @IsString()
-    email:String;
+    email:string;
 
     @IsString()
-    password:String;
+    password:string;
 
     @IsString()
-    role:String;
+    role:string;
 }

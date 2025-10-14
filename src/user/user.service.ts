@@ -1,6 +1,7 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { RegisterUserDto } from 'src/auth/dto/registerUser.dto';
+import { LoginUserDto } from 'src/auth/dto/loginUser.dto';
 import { User } from './schemas/user.schema';
 import { Model } from 'mongoose';
 
@@ -22,5 +23,9 @@ export class UserService {
             }
             throw err
         }
+    }
+
+    async findByEmail(email: string) {
+        return this.userModel.findOne({ email }).lean(); // or .exec()
     }
 }
