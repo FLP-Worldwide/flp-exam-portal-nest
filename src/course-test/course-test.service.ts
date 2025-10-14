@@ -10,9 +10,9 @@ export class CourseTestService {
 
     constructor (@InjectModel(CourseTest.name) private CourseTestModel:Model<CourseTest>){}
 
-    async createTest(courseTestDto:CourseTestDto){
+    async createTest(dto:CourseTestDto){
         try{
-            await this.CourseTestModel.create(courseTestDto);
+            await this.CourseTestModel.create(dto);
         }catch(err:unknown){
             throw err
         }

@@ -7,8 +7,8 @@ export class CourseTestController {
     constructor(private readonly courseTestService:CourseTestService){}
 
     @Post('create')
-    async createTest(@Body() courseTestDto: CourseTestDto){
-        const result = await this.courseTestService.createTest(courseTestDto);
+    async createTest(@Body() dto: CourseTestDto){
+        const result = await this.courseTestService.createTest(dto);
         return {message:"Test Created!", data:result}
     }
 }
