@@ -1,0 +1,40 @@
+name: Deploy (pull + pm2)
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            set -e
+            cd "${{ secrets.DEPLOY_DIR }}"
+            # ensure main is up to date
+            git fetch origin main
+            git checkout main || true
+            git reset --hard origin/main
+
+            # install only prod deps (safe to run each deploy)
+            npm ci --omit=dev --legacy-peer-deps
+
+            # OPTIONAL: run DB migrations if you use them
+            # npx prisma migrate deploy || true
+            # npm run typeorm migration:run || true
+
+            # reload or start pm2 app
+            APP_NAME="${{ secrets.PM2_APP }}"
+            if pm2 describe "$APP_NAME" > /dev/null; then
+              pm2 reload "$APP_NAME" --update-env
+            else
+              pm2 start npm --name "$APP_NAME" -- run start
+            fi
+            pm2 save
