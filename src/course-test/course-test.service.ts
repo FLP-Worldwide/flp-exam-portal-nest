@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, NotFoundException } from "@nestjs/common";
 import { InjectModel } from "@nestjs/mongoose";
 import { Model, Types } from "mongoose";
 import { CourseTest } from "./schemas/course-test.schema";
@@ -33,16 +33,82 @@ export class CourseTestService {
   // ✅ Fetch all tests
   async fetchTest() {
     try {
-      const result = await this.CourseTestModel.find().exec();
-      return { success: true, data: result };
+      return await this.CourseTestModel.find().exec();
     } catch (err: unknown) {
+      throw err;
+    }
+  }
+
+    // ✅ Fetch single test by ID
+    async fetchSingleTest(id: string, module?: string) {
+    try {
+      const testObjectId = new Types.ObjectId(id);
+
+      // 1️⃣ Fetch main test
+      const test = await this.CourseTestModel.findById(testObjectId).lean();
+      if (!test) throw new NotFoundException("Test not found!");
+
+      // 2️⃣ Fetch CourseTestDetails
+      const testDetails = await this.CourseTestDetailsModel.findOne({
+        testId: testObjectId,
+      })
+        .populate("modules.moduleRef")
+        .lean();
+
+      if (!testDetails)
+        return { ...test, modules: {}, message: "No test details found yet" };
+
+      // 3️⃣ Filter by module if requested (e.g. ?module=reading)
+      const filteredModules = module
+        ? testDetails.modules.filter(
+            (m) => m.name.toLowerCase() === module.toLowerCase()
+          )
+        : testDetails.modules;
+
+      // 4️⃣ Fetch full module content from CourseModule collection
+      const modulesWithDetails = await Promise.all(
+        filteredModules.map(async (m) => {
+          if (!m.moduleRef) return null;
+
+          const moduleData = await this.CourseModuleModel.findById(
+            m.moduleRef
+          ).lean();
+
+          if (!moduleData) return null;
+
+          return {
+            name: m.name,
+            level: moduleData.level,
+            content: moduleData.content,
+          };
+        })
+      );
+
+      // 5️⃣ Structure data by level
+      const structured = modulesWithDetails.reduce((acc, m) => {
+  if (!m) return acc;
+  acc[`level_${m.level}`] = {
+    module: m.name,
+    content: m.content,
+  };
+  return acc;
+}, {} as Record<string, { module: string; content: any }>);
+
+      // 6️⃣ Return final merged response
+      return {
+        ...test,
+        testId: testObjectId,
+        modules: structured,
+      };
+    } catch (err) {
+      console.error("❌ Error in fetchFullTestDetails:", err);
       throw err;
     }
   }
 
 async createTestDetails(dto: CourseTestDetailsDto) {
   const { testId, level, module, content } = dto;
-
+    console.log(dto);
   try {
     const testObjectId = new Types.ObjectId(testId);
 

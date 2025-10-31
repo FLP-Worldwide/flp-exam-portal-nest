@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post,Query } from '@nestjs/common';
 import { CourseTestDto } from './dto/courseTest.dto';
 import { CourseTestService } from './course-test.service';
 import { CourseTestDetailsDto } from './dto/courseTestDetails.dto';
@@ -25,11 +25,19 @@ export class CourseTestController {
         return {message:"Test Fetched!", data:result}
     }
 
+    @Get('details/:testId')
+    async fetchTestDetails(@Param('testId') testId: string, @Query('module') module?: string) {
+        const result = await this.courseTestService.fetchSingleTest(testId, module);
+
+        return { message: "Test details fetched!", data: result };
+    }
+
     @Patch('')
     async updateTest(@Body() dto: CourseTestDto){
         const result = await this.courseTestService.createTest(dto);
         return {message:"Test Created!", data:result}
     }
+    
     @Delete('')
     async deleteTest(@Body() dto: CourseTestDto){
         const result = await this.courseTestService.createTest(dto);
