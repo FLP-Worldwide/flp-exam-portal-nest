@@ -40,71 +40,84 @@ export class CourseTestService {
     }
   }
 
-
-  // ✅ Create / Update Course Test Details + Module
- async createTestDetails(dto: CourseTestDetailsDto) {
+async createTestDetails(dto: CourseTestDetailsDto) {
   const { testId, level, module, content } = dto;
 
   try {
+    const testObjectId = new Types.ObjectId(testId);
 
-    const testObjectId = new Types.ObjectId(testId); // ✅ Convert once here
+    // ✅ Step 1: Find or Create Course Test Details
     let testDetails = await this.CourseTestDetailsModel.findOne({ testId: testObjectId });
 
     if (!testDetails) {
       testDetails = await this.CourseTestDetailsModel.create({
-        testId: new Types.ObjectId(testId),
+        testId: testObjectId,
         modules: [],
       });
     }
 
-    // ✅ Step 2: Check if this module already exists (same module name)
-    const existingModuleEntry = testDetails.modules.find(
+    // ✅ Step 2: Find existing module entries for same module name
+    const moduleEntries = testDetails.modules.filter(
       (m) => m.name.toLowerCase() === module.toLowerCase()
     );
-    // console.log(existingModuleEntry);
+
+    let existingModuleEntry: any = null;
+
+    if (moduleEntries.length > 0) {
+      // ✅ Get moduleRefs
+      const moduleRefs = moduleEntries.map((m) => m.moduleRef);
+
+      // ✅ Find CourseModule documents for these refs
+      const existingModules = await this.CourseModuleModel.find({
+        _id: { $in: moduleRefs },
+      });
+
+      // ✅ Match specific level inside CourseModule
+      existingModuleEntry = existingModules.find((m) => m.level === level);
+    }
+
     let moduleData;
 
-    if (existingModuleEntry && existingModuleEntry.moduleRef) {
-      // ✅ Step 3a: Update the module (don’t match on level)
+    if (existingModuleEntry) {
+      // ✅ Step 3a: Update the existing CourseModule for this level
       moduleData = await this.CourseModuleModel.findByIdAndUpdate(
-        existingModuleEntry.moduleRef,
-        { level, content },
+        existingModuleEntry._id,
+        { content },
         { new: true }
       );
-
     } else {
-
-      // ✅ Step 3b: Module doesn't exist → create new
+      // ✅ Step 3b: Create a new CourseModule for this level
       moduleData = await this.CourseModuleModel.create({
         testDetailsId: testDetails._id,
         level,
         content,
       });
 
-      // ✅ Step 4: Add or update module reference
-      if (existingModuleEntry) {
-        existingModuleEntry.moduleRef = moduleData._id;
-      } else {
-        testDetails.modules.push({
-          name: module,
-          moduleRef: moduleData._id,
-        });
-      }
+      // ✅ Step 4: Push the new module reference to modules array
+      testDetails.modules.push({
+        name: module,
+        moduleRef: moduleData._id,
+      });
 
       await testDetails.save();
     }
 
+    // ✅ Step 5: Return success response
     return {
       success: true,
       message: existingModuleEntry
-        ? "Module updated successfully"
-        : "Module created successfully",
-      data: { testDetails, module: moduleData },
+        ? `Module (Level ${level}) updated successfully`
+        : `Module (Level ${level}) created successfully`,
+      data: {
+        testDetails,
+        module: moduleData,
+      },
     };
-  } catch (err: unknown) {
+  } catch (err) {
     console.error("❌ Error in createTestDetails:", err);
-    throw err;
+    throw new Error("Failed to create or update test details");
   }
 }
+
 
 }
