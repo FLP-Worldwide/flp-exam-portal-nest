@@ -5,6 +5,7 @@ import { CourseTestService } from './course-test.service';
 import { CourseTest, CourseTestSchema } from './schemas/course-test.schema';
 import { CourseTestDetails, CourseTestDetailsSchema } from './schemas/course-test-details.schema';
 import { CourseModule, CourseModuleSchema } from './schemas/course-module.schema';
+import { UserAssignment, UserAssignmentSchema } from 'src/user/schemas/userAssignment.schema';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { CourseModule, CourseModuleSchema } from './schemas/course-module.schema
       { name: CourseTest.name, schema: CourseTestSchema },
       { name: CourseTestDetails.name, schema: CourseTestDetailsSchema },
       { name: CourseModule.name, schema: CourseModuleSchema },
+      {name :UserAssignment.name, schema:UserAssignmentSchema},
     ]),
   ],
   controllers: [CourseTestController],
