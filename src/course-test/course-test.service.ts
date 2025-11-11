@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { InjectModel } from "@nestjs/mongoose";
 import { Model, Types } from "mongoose";
 import { CourseTest } from "./schemas/course-test.schema";
@@ -7,6 +7,8 @@ import { CourseTestDetails } from "./schemas/course-test-details.schema";
 import { CourseTestDto } from "./dto/courseTest.dto";
 import { CourseTestDetailsDto } from "./dto/courseTestDetails.dto";
 import { UserAssignment, UserAssignmentDocument } from "src/user/schemas/userAssignment.schema";
+import { CourseTestResult, CourseTestResultDocument } from "./schemas/course-test-result.schema";
+
 
 @Injectable()
 export class CourseTestService {
@@ -21,7 +23,10 @@ export class CourseTestService {
     private readonly CourseTestDetailsModel: Model<CourseTestDetails>,
 
     @InjectModel(UserAssignment.name)
-    private readonly UserAssignmentModel: Model<UserAssignmentDocument>
+    private readonly UserAssignmentModel: Model<UserAssignmentDocument>,
+
+    @InjectModel(CourseTestResult.name)
+    private readonly CourseTestResultModel: Model<CourseTestResultDocument>
   ) {}
 
   // ✅ Create main Course Test
@@ -147,7 +152,17 @@ export class CourseTestService {
           .map((m) => (m?.name || "").toString().trim().toLowerCase())
           .filter(Boolean)
       );
-      const totalSections = uniqueNames.size;
+
+      const sectionMap = new Map<string, string>();
+      modulesArray.forEach((m) => {
+        const raw = (m?.name || '').toString().trim();
+        if (!raw) return;
+        const key = raw.toLowerCase();
+        if (!sectionMap.has(key)) sectionMap.set(key, raw);
+      });
+      const sections = Array.from(sectionMap.values()); 
+
+      const totalSections = sections.length;
 
       // 5) optional: attempts info for a specific user
       let attemptsGiven = 0;
@@ -191,6 +206,7 @@ export class CourseTestService {
           duration: test.duration,
           price: test.price || 0,
           totalSections,
+          sections,
           totalLevels,
         },
       };
@@ -210,76 +226,6 @@ export class CourseTestService {
     }
   }
 
-
-
-
-
-    // ✅ Fetch single test by ID
-    async fetchSingleTest(id: string, module?: string) {
-    try {
-      const testObjectId = new Types.ObjectId(id);
-
-      // 1️⃣ Fetch main test
-      const test = await this.CourseTestModel.findById(testObjectId).lean();
-      if (!test) throw new NotFoundException("Test not found!");
-
-      // 2️⃣ Fetch CourseTestDetails
-      const testDetails = await this.CourseTestDetailsModel.findOne({
-        testId: testObjectId,
-      })
-        .populate("modules.moduleRef")
-        .lean();
-
-      if (!testDetails)
-        return { ...test, modules: {}, message: "No test details found yet" };
-
-      // 3️⃣ Filter by module if requested (e.g. ?module=reading)
-      const filteredModules = module
-        ? testDetails.modules.filter(
-            (m) => m.name.toLowerCase() === module.toLowerCase()
-          )
-        : testDetails.modules;
-
-      // 4️⃣ Fetch full module content from CourseModule collection
-      const modulesWithDetails = await Promise.all(
-        filteredModules.map(async (m) => {
-          if (!m.moduleRef) return null;
-
-          const moduleData = await this.CourseModuleModel.findById(
-            m.moduleRef
-          ).lean();
-
-          if (!moduleData) return null;
-
-          return {
-            name: m.name,
-            level: moduleData.level,
-            content: moduleData.content,
-          };
-        })
-      );
-
-      // 5️⃣ Structure data by level
-      const structured = modulesWithDetails.reduce((acc, m) => {
-  if (!m) return acc;
-  acc[`level_${m.level}`] = {
-    module: m.name,
-    content: m.content,
-  };
-  return acc;
-}, {} as Record<string, { module: string; content: any }>);
-
-      // 6️⃣ Return final merged response
-      return {
-        ...test,
-        testId: testObjectId,
-        modules: structured,
-      };
-    } catch (err) {
-      console.error("❌ Error in fetchFullTestDetails:", err);
-      throw err;
-    }
-  }
 
 async createTestDetails(dto: CourseTestDetailsDto) {
   const { testId, level, module, content } = dto;
@@ -351,7 +297,7 @@ async createTestDetails(dto: CourseTestDetailsDto) {
         : `Module (Level ${level}) created successfully`,
       data: {
         testDetails,
-        module: moduleData,
+        module: moduleData
       },
     };
   } catch (err) {
@@ -452,6 +398,170 @@ async createTestDetails(dto: CourseTestDetailsDto) {
       throw err;
     }
   }
+
+
+
+
+
+
+  async fetchSingleTest(id: string, module?: string) {
+  try {
+    const testObjectId = new Types.ObjectId(id);
+
+    // 1) main test
+    const test = await this.CourseTestModel.findById(testObjectId).lean();
+    if (!test) throw new NotFoundException("Test not found!");
+
+    // 2) test details
+    const testDetails = await this.CourseTestDetailsModel.findOne({
+      testId: testObjectId,
+    })
+      .populate("modules.moduleRef")
+      .lean();
+
+    if (!testDetails)
+      return { ...test, modules: {}, message: "No test details found yet" };
+
+    // 3) filter modules by name if requested
+    const filteredModules = module
+      ? testDetails.modules.filter((m) => m.name.toLowerCase() === module.toLowerCase())
+      : testDetails.modules;
+
+    // global flat map (questionKey -> id)
+    const globalQuestionIdMap: Record<string, string> = {};
+
+    // helper to produce deterministic id when _qid missing:
+    const makeDeterministicId = (moduleId: any, path: string) => {
+      // keep it short and predictable: <moduleId>_<path>
+      try {
+        return `${String(moduleId)}_${path.replace(/\W+/g, '_')}`;
+      } catch {
+        return new Types.ObjectId().toString();
+      }
+    };
+
+    // helper to traverse content, add questionId in-place into cloned object, and populate map
+    const attachIdsAndMap = (content: any, moduleId: any, prefix = '') => {
+      if (content === null || content === undefined) return content;
+      // deep clone to avoid modifying DB object
+      const cloned = JSON.parse(JSON.stringify(content));
+
+      const traverse = (node: any, pathBase: string) => {
+        if (node === null || node === undefined) return;
+
+        if (Array.isArray(node)) {
+          node.forEach((item, idx) => traverse(item, `${pathBase}[${idx}]`));
+          return;
+        }
+
+        if (typeof node === 'object') {
+          // if node has _qid use it; otherwise build deterministic id
+          const existing = node._qid ?? node._id ?? node.id ?? null;
+          const qid = existing ? String(existing) : makeDeterministicId(moduleId, pathBase || 'root');
+          // attach questionId field for the response object (do NOT modify DB)
+          node.questionId = qid;
+          // store into flat map with a friendly key
+          const friendlyKey = (pathBase || 'root').replace(/[\[\].]/g, '_').replace(/^_+|_+$/g, '');
+          const mapKey = friendlyKey || 'root';
+          globalQuestionIdMap[mapKey] = qid;
+
+          // continue into nested properties
+          for (const k of Object.keys(node)) {
+            if (typeof node[k] === 'object') {
+              traverse(node[k], pathBase ? `${pathBase}.${k}` : k);
+            }
+          }
+        }
+      };
+
+      traverse(cloned, prefix || '');
+      return cloned;
+    };
+
+    const modulesWithDetails = await Promise.all(
+      filteredModules.map(async (m) => {
+        if (!m.moduleRef) return null;
+        const moduleData = await this.CourseModuleModel.findById(m.moduleRef).lean();
+        if (!moduleData) return null;
+
+        const contentWithIds = attachIdsAndMap(moduleData.content ?? {}, moduleData._id ?? m.moduleRef, m.name);
+
+        const moduleQuestionIdMap: Record<string, string> = {};
+        Object.entries(globalQuestionIdMap).forEach(([k, v]) => {
+          if (k.startsWith(m.name.replace(/\W+/g, '_'))) {
+            moduleQuestionIdMap[k] = v;
+          } else {
+            moduleQuestionIdMap[k] = v;
+          }
+        });
+
+        return {
+          name: m.name,
+          level: moduleData.level,
+          content: contentWithIds,
+          // questionIdMap: moduleQuestionIdMap,
+        };
+      })
+    );
+
+    const structured = modulesWithDetails.reduce((acc, mod) => {
+      if (!mod) return acc;
+      acc[`level_${mod.level}`] = {
+        module: mod.name,
+        content: mod.content,
+
+      };
+      return acc;
+    }, {} as Record<string, { module: string; content: any;  }>);
+
+    // 6) Return response (includes global questionIdMap for quick lookup)
+    return {
+      ...test,
+      testId: testObjectId,
+      modules: structured,
+
+    };
+  } catch (err) {
+    console.error("❌ Error in fetchSingleTest:", err);
+    throw err;
+  }
+}
+
+
+
+async handleSubmission(payload: any, userId: string) {
+  // basic validation
+  if (!payload) throw new BadRequestException('Missing payload');
+  if (!payload.testId) throw new BadRequestException('Missing testId in payload');
+  if (!userId) throw new BadRequestException('Missing userId');
+
+  // prepare doc
+  const doc = {
+    testId: String(payload.testId),
+    userId: String(userId),
+    submittedAt: payload.submittedAt ? new Date(payload.submittedAt) : new Date(),
+    rawPayload: payload,
+    // keep these for compatibility with existing schema fields
+    perQuestion: [],         // left empty for now
+    totalPoints: 0,
+    maxPoints: 0,
+    perModuleSummary: {},
+    status: 'pending' as 'pending', // default since no grading done
+  };
+
+  // persist
+  const created = await this.CourseTestResultModel.create(doc);
+
+  // return a concise summary
+  return {
+    resultId: created._id,
+    testId: created.testId,
+    userId: created.userId,
+    submittedAt: created.submittedAt,
+    status: created.status,
+    rawPayloadSaved: true,
+  };
+}
 
 
 
