@@ -37,8 +37,10 @@ jobs:
       - name: Deploy to Elastic Beanstalk
         uses: einaregilsson/beanstalk-deploy@v22
         with:
-          application_name: testyourgerman-flpexam-api       # EB application name
-          environment_name: Testyourgerman-flpexam-api-env   # EB environment name
+          aws_access_key: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws_secret_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          application_name: testyourgerman-flpexam-api
+          environment_name: Testyourgerman-flpexam-api-env
           version_label: v-${{ github.run_number }}
           region: eu-north-1
           deployment_package: deploy.zip
