@@ -31,8 +31,8 @@ jobs:
         with:
           aws_access_key: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws_secret_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          application_name: testyourgerman-flpexam-api
-          environment_name: Testyourgerman-flpexam-api-env
+          application_name: flpexam-api
+          environment_name: Flpexam-api-env
           version_label: ${{ github.sha }}
           region: eu-north-1
           deployment_package: deploy.zip
