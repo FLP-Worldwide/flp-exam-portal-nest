@@ -1,0 +1,44 @@
+name: Deploy NestJS API to Elastic Beanstalk
+
+on:
+  push:
+    branches: [ main ]   # change if your default branch is different
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20      # or the Node version you use
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build NestJS
+        run: npm run build
+
+      # create deployment package for Elastic Beanstalk
+      - name: Zip project
+        run: zip -r deploy.zip . -x "*.git*"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: eu-north-1     # <--- your region (Stockholm)
+
+      - name: Deploy to Elastic Beanstalk
+        uses: einaregilsson/beanstalk-deploy@v22
+        with:
+          application_name: testyourgerman-flpexam-api       # EB application name
+          environment_name: Testyourgerman-flpexam-api-env   # EB environment name
+          version_label: v-${{ github.run_number }}
+          region: eu-north-1
+          deployment_package: deploy.zip
