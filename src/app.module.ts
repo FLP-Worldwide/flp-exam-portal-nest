@@ -14,7 +14,7 @@ import { StudentModule } from './student/student.module';
     ConfigModule.forRoot(),
     AuthModule, 
     UserModule,
-    MongooseModule.forRoot(process.env.MONGODB_DB_URI as string),
+    MongooseModule.forRoot(process.env.MONGO_URL as string),
     CourseTestModule,
     StudentModule
   ],

@@ -33,6 +33,6 @@ jobs:
           aws_secret_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           application_name: testyourgerman-flpexam-api
           environment_name: Testyourgerman-flpexam-api-env
-          version_label: v-${{ github.run_number }}-${{ github.run_attempt }}
+          version_label: ${{ github.sha }}
           region: eu-north-1
           deployment_package: deploy.zip
