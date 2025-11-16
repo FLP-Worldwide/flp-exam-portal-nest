@@ -21,8 +21,6 @@ export class UserController {
     async assignTestToUser(@Body() body: any) {
         const { userId, testId } = body;
         const result = await this.userService.assignTestToUser(userId, testId);
-
-        console.log(result);
        if (!result.success) {
             return {
             statusCode: 400,
@@ -41,8 +39,6 @@ export class UserController {
 
     @Post('create')
     async createStudent(@Body()  body:any){
-
-        console.log(body);
 
         const student = {
             name:body.name,

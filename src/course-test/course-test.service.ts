@@ -230,7 +230,7 @@ export class CourseTestService {
 async createTestDetails(dto: CourseTestDetailsDto) {
 
   const { testId, level, module, content } = dto;
-    console.log(dto);
+
   try {
     const testObjectId = new Types.ObjectId(testId);
 
@@ -529,40 +529,260 @@ async createTestDetails(dto: CourseTestDetailsDto) {
 }
 
 
-
 async handleSubmission(payload: any, userId: string) {
-  // basic validation
   if (!payload) throw new BadRequestException('Missing payload');
   if (!payload.testId) throw new BadRequestException('Missing testId in payload');
   if (!userId) throw new BadRequestException('Missing userId');
 
-  // prepare doc
-  const doc = {
-    testId: String(payload.testId),
-    userId: String(userId),
-    submittedAt: payload.submittedAt ? new Date(payload.submittedAt) : new Date(),
-    rawPayload: payload,
-    // keep these for compatibility with existing schema fields
-    perQuestion: [],         // left empty for now
-    totalPoints: 0,
-    maxPoints: 0,
-    perModuleSummary: {},
-    status: 'pending' as 'pending', // default since no grading done
+  const testId = String(payload.testId);
+  const user = String(userId);
+
+  // 1) Get correct answers for AUDIO from DB
+  const { audioMap, totalAudioQuestions } = await this.buildAudioQuestionMap(testId);
+
+  type PerQuestionItem = {
+    questionId: string;
+    answerSubmitted: any;
+    correctAnswer: any | null;
+    isCorrect: boolean | null;  // null = not auto-graded
+    points: number;             // 1 for correct / accepted, else 0
   };
 
-  // persist
+  const perQuestion: PerQuestionItem[] = [];
+
+  // per-module stats
+  const perModuleSummary: Record<string, { points: number; maxPoints: number }> = {
+    reading: { points: 0, maxPoints: 0 },
+    audio:   { points: 0, maxPoints: 0 },
+    writing: { points: 0, maxPoints: 0 },
+  };
+
+  let totalPoints = 0; // earned
+  let maxPoints = 0;   // total possible (1 per question)
+
+  // ---------- helper pushers ----------
+
+  // reading: stored only, no auto grading yet
+  const pushReadingAnswer = (questionId: string, submitted: any) => {
+    if (!questionId) return;
+    perQuestion.push({
+      questionId: String(questionId),
+      answerSubmitted: submitted,
+      correctAnswer: null,
+      isCorrect: null,
+      points: 0,
+    });
+    perModuleSummary.reading.maxPoints += 1;
+    maxPoints += 1; // reserved point but currently always 0 because we don't auto grade
+  };
+
+  // audio: compare with audioMap
+  const pushAudioAnswer = (questionId: string, submitted: any) => {
+    if (!questionId) return;
+
+    const correct = audioMap.has(String(questionId))
+      ? audioMap.get(String(questionId))!
+      : null;
+
+    let isCorrect: boolean | null = null;
+    let pts = 0;
+
+    if (typeof correct === 'boolean') {
+      const submittedBool = Boolean(submitted);
+      isCorrect = submittedBool === correct;
+      pts = isCorrect ? 1 : 0;
+    }
+
+    perQuestion.push({
+      questionId: String(questionId),
+      answerSubmitted: submitted,
+      correctAnswer: correct,
+      isCorrect,
+      points: pts,
+    });
+
+    perModuleSummary.audio.maxPoints += 1;
+    maxPoints += 1;
+
+    if (pts > 0) {
+      perModuleSummary.audio.points += pts;
+      totalPoints += pts;
+    }
+  };
+
+  // writing: every submitted answer counts as 1 point (no correctness check)
+  const pushWritingAnswer = (questionId: string, submitted: any) => {
+    if (!questionId) return;
+
+    const pts = 1;
+
+    perQuestion.push({
+      questionId: String(questionId),
+      answerSubmitted: submitted,
+      correctAnswer: null,
+      isCorrect: null, // or true if you want
+      points: pts,
+    });
+
+    perModuleSummary.writing.maxPoints += 1;
+    perModuleSummary.writing.points += pts;
+
+    maxPoints += 1;
+    totalPoints += pts;
+  };
+
+  // ---------- 2) READING answers from payload ----------
+
+  // reading.answers.level1/2/3/4/5 as in your payload
+  const readingAnswers = payload.reading?.answers || {};
+
+  Object.entries(readingAnswers).forEach(([levelKey, data]) => {
+    if (!data) return;
+
+    // levels 1–3 : flat object { qid: "answer" }
+    if (!Array.isArray(data) && typeof data === 'object') {
+      Object.entries(data as Record<string, any>).forEach(
+        ([qid, value]) => pushReadingAnswer(qid, value),
+      );
+      return;
+    }
+
+    // levels 4 & 5 : array of { id, value }
+    if (Array.isArray(data)) {
+      data.forEach((item: any) => {
+        if (!item) return;
+        const qid = item.id ?? item.questionId;
+        const value = item.value ?? item.answer;
+        pushReadingAnswer(qid, value);
+      });
+    }
+  });
+
+  // ---------- 3) AUDIO answers ----------
+
+  // Primary: boolean array payload.audio
+  const audioArray = Array.isArray(payload.audio) ? payload.audio : [];
+  audioArray.forEach((a: any) => {
+    if (!a) return;
+    pushAudioAnswer(a.questionId, a.answer);
+  });
+
+  // Fallback: levels.audio { qid: "richtig"/"falsch" }
+  const audioLevels = payload.levels?.audio || {};
+  if (audioArray.length === 0 && audioLevels && typeof audioLevels === 'object') {
+    Object.entries(audioLevels as Record<string, string>).forEach(
+      ([qid, val]) => {
+        const bool =
+          typeof val === 'string'
+            ? val.toLowerCase() === 'richtig'
+            : Boolean(val);
+        pushAudioAnswer(qid, bool);
+      },
+    );
+  }
+
+  // ---------- 4) WRITING answers ----------
+  // payload.writing.answers = [{ questionId, answer }, ...]
+  const writingAnswers = Array.isArray(payload.writing?.answers)
+    ? payload.writing.answers
+    : [];
+
+  writingAnswers.forEach((w: any) => {
+    if (!w) return;
+    if (!w.questionId) return;
+    if (w.answer == null || w.answer === '') return; // only if user wrote something
+    pushWritingAnswer(w.questionId, w.answer);
+  });
+
+  // ---------- 5) Decide status ----------
+  // We now auto-assign points for audio + writing. Reading is not graded yet.
+  const hasReading = Object.keys(readingAnswers || {}).length > 0;
+  const hasAudio = perModuleSummary.audio.maxPoints > 0;
+  const hasWriting = writingAnswers.length > 0;
+
+  let status: 'graded' | 'partial' | 'pending' = 'pending';
+  if (hasAudio || hasWriting) {
+    status = hasReading ? 'partial' : 'graded';
+  }
+
+  // ---------- 6) Build & save result document ----------
+  const doc = {
+    testId,
+    userId: user,
+    submittedAt: payload.submittedAt
+      ? new Date(payload.submittedAt)
+      : new Date(),
+    rawPayload: payload,
+    perQuestion,
+    totalPoints,
+    maxPoints,
+    perModuleSummary,
+    status,
+  };
+
   const created = await this.CourseTestResultModel.create(doc);
 
-  // return a concise summary
+  // ---------- 7) Build extra summary for response ----------
+  const totalQuestions = perQuestion.length;
+
+  const audioSummary = perModuleSummary.audio || { points: 0, maxPoints: 0 };
+
   return {
     resultId: created._id,
     testId: created.testId,
     userId: created.userId,
     submittedAt: created.submittedAt,
     status: created.status,
+
+    // overall
+    totalQuestions,
+    totalMarks: maxPoints,   // same as number of questions, because 1 point each
+    earnedMarks: totalPoints,
+
+    // audio-only summary
+    audio: {
+      totalQuestions: audioSummary.maxPoints, // 1 point per question
+      maxPoints: audioSummary.maxPoints,
+      earnedPoints: audioSummary.points,
+    },
+
+    perModuleSummary: created.perModuleSummary,
     rawPayloadSaved: true,
   };
 }
+
+private async buildAudioQuestionMap(testId: string) {
+  // Find details & populate moduleRef (CourseModule)
+  const details = await this.CourseTestDetailsModel
+    .findOne({ testId })
+    .populate('modules.moduleRef')
+    .lean();
+
+  const audioMap = new Map<string, boolean>();
+
+  if (!details || !Array.isArray(details.modules)) {
+    return { audioMap, totalAudioQuestions: 0 };
+  }
+
+  for (const m of details.modules) {
+    const modDoc: any = m.moduleRef;
+    if (!modDoc || !modDoc.content) continue;
+
+    const c: any = modDoc.content;
+
+    // Detect "audio" module by presence of media + questions[]
+    if (c.media && Array.isArray(c.questions)) {
+      c.questions.forEach((q: any) => {
+        if (!q || !q.questionId) return;
+        audioMap.set(String(q.questionId), Boolean(q.correctAnswer));
+      });
+    }
+  }
+
+  return { audioMap, totalAudioQuestions: audioMap.size };
+}
+
+
 
 
 
