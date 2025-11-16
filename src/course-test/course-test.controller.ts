@@ -1,8 +1,12 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post,Query, Req, UnauthorizedException } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post,Query, Req, UnauthorizedException,UploadedFile, UseInterceptors } from '@nestjs/common';
 import { CourseTestDto } from './dto/courseTest.dto';
 import { CourseTestService } from './course-test.service';
 import { CourseTestDetailsDto } from './dto/courseTestDetails.dto';
 import { JwtService } from '@nestjs/jwt';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { audioMulterConfig } from '../config/multer-audio.config';
+import { Multer } from 'multer'; 
+
 @Controller('course-test')
 export class CourseTestController {
     constructor(private readonly courseTestService:CourseTestService,
@@ -17,6 +21,7 @@ export class CourseTestController {
 
     @Post('details')
     async createTestDetails(@Body() dto: CourseTestDetailsDto){
+
         const result = await this.courseTestService.createTestDetails(dto);
         return {message:"Test Details Created!", data:result}
     }
@@ -122,6 +127,32 @@ async updateTest(@Body() payload: any, @Req() req: any) {
   const result = await this.courseTestService.handleSubmission(payload, userId);
   return { message: 'Test submitted!', data: result };
 }
+
+
+@Post('audio/upload')
+  @UseInterceptors(FileInterceptor('file', audioMulterConfig))
+  async uploadAudio(@UploadedFile() file: any, @Req() req:any) {
+    if (!file) {
+      return { success: false, message: 'No file uploaded' };
+    }
+
+    const baseUrl =
+      process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
+
+    const relativePath = `/uploads/audio/${file.filename}`;
+    const url = `${baseUrl}${relativePath}`;
+
+    return {
+      success: true,
+      filename: file.filename,
+      path: relativePath, // you will save this in DB as mediaPath
+      url,
+      mimetype: file.mimetype,
+      size: file.size,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
 
     
     // @Delete('')

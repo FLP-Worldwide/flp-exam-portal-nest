@@ -77,6 +77,7 @@ export class UserService {
         assignments.forEach((a) => {
             const userId = (a.userId as any)?._id?.toString?.() || a.userId?.toString?.();
             if (!userId) return;
+             if (!a.testId || !(a.testId as any)?._id) return;
 
             if (!assignmentMap.has(userId)) {
             assignmentMap.set(userId, []);
