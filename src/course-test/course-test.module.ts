@@ -7,6 +7,7 @@ import { CourseTestDetails, CourseTestDetailsSchema } from './schemas/course-tes
 import { CourseModule, CourseModuleSchema } from './schemas/course-module.schema';
 import { UserAssignment, UserAssignmentSchema } from 'src/user/schemas/userAssignment.schema';
 import { CourseTestResult, CourseTestResultSchema } from './schemas/course-test-result.schema';
+import { AiWritingEvaluatorService } from 'src/ai-writing-evaluator/ai-writing-evaluator.service';
 
 @Module({
   imports: [
@@ -19,6 +20,6 @@ import { CourseTestResult, CourseTestResultSchema } from './schemas/course-test-
     ]),
   ],
   controllers: [CourseTestController],
-  providers: [CourseTestService],
+  providers: [CourseTestService, AiWritingEvaluatorService],
 })
 export class CourseTestModule {}

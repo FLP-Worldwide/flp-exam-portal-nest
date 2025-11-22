@@ -8,6 +8,7 @@ import { CourseTestDto } from "./dto/courseTest.dto";
 import { CourseTestDetailsDto } from "./dto/courseTestDetails.dto";
 import { UserAssignment, UserAssignmentDocument } from "src/user/schemas/userAssignment.schema";
 import { CourseTestResult, CourseTestResultDocument } from "./schemas/course-test-result.schema";
+import { AiWritingEvaluatorService } from "../ai-writing-evaluator/ai-writing-evaluator.service";
 
 
 @Injectable()
@@ -26,7 +27,9 @@ export class CourseTestService {
     private readonly UserAssignmentModel: Model<UserAssignmentDocument>,
 
     @InjectModel(CourseTestResult.name)
-    private readonly CourseTestResultModel: Model<CourseTestResultDocument>
+    private readonly CourseTestResultModel: Model<CourseTestResultDocument>,
+
+    private readonly aiWritingEvaluator: AiWritingEvaluatorService,
   ) {}
 
   // ✅ Create main Course Test
@@ -529,6 +532,9 @@ async createTestDetails(dto: CourseTestDetailsDto) {
 }
 
 
+
+
+
 async handleSubmission(payload: any, userId: string) {
   if (!payload) throw new BadRequestException('Missing payload');
   if (!payload.testId) throw new BadRequestException('Missing testId in payload');
@@ -537,51 +543,97 @@ async handleSubmission(payload: any, userId: string) {
   const testId = String(payload.testId);
   const user = String(userId);
 
-  // 1) Get correct answers for AUDIO from DB
-  const { audioMap, totalAudioQuestions } = await this.buildAudioQuestionMap(testId);
+  // 1) Get correct answers for AUDIO & READING from DB
+  const { audioMap }   = await this.buildAudioQuestionMap(testId);
+  const { readingMap } = await this.buildReadingQuestionMap(testId);
+  const { writingMap, defaultWritingPoints } = await this.buildWritingQuestionMap(testId);
 
   type PerQuestionItem = {
     questionId: string;
     answerSubmitted: any;
     correctAnswer: any | null;
     isCorrect: boolean | null;  // null = not auto-graded
-    points: number;             // 1 for correct / accepted, else 0
+    points: number;       
+    feedback?: string | null;
+    suggestion?: string | null;      // marks earned for that question
   };
 
   const perQuestion: PerQuestionItem[] = [];
 
-  // per-module stats
   const perModuleSummary: Record<string, { points: number; maxPoints: number }> = {
     reading: { points: 0, maxPoints: 0 },
     audio:   { points: 0, maxPoints: 0 },
     writing: { points: 0, maxPoints: 0 },
   };
 
-  let totalPoints = 0; // earned
-  let maxPoints = 0;   // total possible (1 per question)
+  let totalPoints = 0;
+  let maxPoints = 0;
 
-  // ---------- helper pushers ----------
+  // ---------- helpers ----------
 
-  // reading: stored only, no auto grading yet
-  const pushReadingAnswer = (questionId: string, submitted: any) => {
-    if (!questionId) return;
-    perQuestion.push({
-      questionId: String(questionId),
-      answerSubmitted: submitted,
-      correctAnswer: null,
-      isCorrect: null,
-      points: 0,
-    });
-    perModuleSummary.reading.maxPoints += 1;
-    maxPoints += 1; // reserved point but currently always 0 because we don't auto grade
+  // normalize for string comparison (handles ["um"] etc.)
+  const normalize = (val: any): string => {
+    if (val == null) return '';
+
+    let s = String(val).trim();
+
+    // handle stringified JSON arrays like '["um"]'
+    if (s.startsWith('[') && s.endsWith(']')) {
+      try {
+        const arr = JSON.parse(s);
+        if (Array.isArray(arr)) {
+          s = arr.join(','); // in your case it's single item, so "um"
+        }
+      } catch (_) {
+        // ignore JSON parse error, fall back to raw string
+      }
+    }
+
+    return s.toLowerCase().replace(/\s+/g, ' ');
   };
 
-  // audio: compare with audioMap
+  // READING: auto-grade if we have a correct answer in readingMap
+  const pushReadingAnswer = (questionId: string, submitted: any) => {
+    if (!questionId) return;
+
+    const qid = String(questionId);
+    const correct = readingMap.get(qid) ?? null;
+
+    let isCorrect: boolean | null = null;
+    let pts = 0;
+
+    if (correct != null) {
+      const submittedNorm = normalize(submitted);
+      const correctNorm   = normalize(correct);
+      isCorrect = submittedNorm === correctNorm;
+      pts = isCorrect ? 1 : 0;              // 1 mark per reading question
+    }
+
+    perQuestion.push({
+      questionId: qid,
+      answerSubmitted: submitted,
+      correctAnswer: correct,
+      isCorrect,
+      points: pts,
+    });
+
+    perModuleSummary.reading.maxPoints += 1;
+    maxPoints += 1;
+
+    if (pts > 0) {
+      perModuleSummary.reading.points += pts;
+      totalPoints += pts;
+    }
+  };
+
+  // AUDIO: same as before (already working)
   const pushAudioAnswer = (questionId: string, submitted: any) => {
     if (!questionId) return;
 
-    const correct = audioMap.has(String(questionId))
-      ? audioMap.get(String(questionId))!
+    const qid = String(questionId);
+
+    const correct = audioMap.has(qid)
+      ? audioMap.get(qid)!
       : null;
 
     let isCorrect: boolean | null = null;
@@ -594,7 +646,7 @@ async handleSubmission(payload: any, userId: string) {
     }
 
     perQuestion.push({
-      questionId: String(questionId),
+      questionId: qid,
       answerSubmitted: submitted,
       correctAnswer: correct,
       isCorrect,
@@ -610,36 +662,66 @@ async handleSubmission(payload: any, userId: string) {
     }
   };
 
-  // writing: every submitted answer counts as 1 point (no correctness check)
-  const pushWritingAnswer = (questionId: string, submitted: any) => {
-    if (!questionId) return;
+  // WRITING: 5 marks per submitted task
+// WRITING: each submitted task gets points from DB (default 5) – no correctness check
+// WRITING: use LLM to score (0..maxPoints), no negative marks
+const pushWritingAnswer = async (
+  questionId: string,
+  submitted: any,
+  taskMeta: any | null,  // title/body/instruction
+) => {
+  if (!questionId) return;
 
-    const pts = 1;
+  const qid = String(questionId);
+  const maxPts = writingMap.get(qid) ?? defaultWritingPoints; // usually 5
 
-    perQuestion.push({
-      questionId: String(questionId),
-      answerSubmitted: submitted,
-      correctAnswer: null,
-      isCorrect: null, // or true if you want
-      points: pts,
-    });
+  // call LLM to evaluate
+  const { score, feedback, suggestion } = await this.aiWritingEvaluator.evaluateWriting({
+    title: taskMeta?.title || '',
+    body: taskMeta?.body || '',
+    instruction: taskMeta?.instruction || '',
+    answer: String(submitted || ''),
+    language: 'German',
+    maxPoints: maxPts,
+  });
 
-    perModuleSummary.writing.maxPoints += 1;
-    perModuleSummary.writing.points += pts;
+  const pts = Math.max(0, Math.min(maxPts, score));
 
-    maxPoints += 1;
-    totalPoints += pts;
-  };
+  perQuestion.push({
+    questionId: qid,
+    answerSubmitted: submitted,
+    correctAnswer: null,          // no single "correct" answer
+    isCorrect: null,              // we’re scoring, not true/false
+    points: pts,
+    feedback,
+    suggestion,
+  });
+
+  perModuleSummary.writing.maxPoints += maxPts;
+  perModuleSummary.writing.points += pts;
+
+  maxPoints += maxPts;
+  totalPoints += pts;
+
+  // OPTIONAL: if you want to store feedback per question somewhere,
+  // extend the perQuestion type with `feedback?: string` and save it.
+};
+
+
 
   // ---------- 2) READING answers from payload ----------
 
-  // reading.answers.level1/2/3/4/5 as in your payload
   const readingAnswers = payload.reading?.answers || {};
 
-  Object.entries(readingAnswers).forEach(([levelKey, data]) => {
+  Object.entries(readingAnswers).forEach(([levelKeyRaw, data]) => {
+    const levelKey = String(levelKeyRaw).toLowerCase();
+
+    // only level1, level2, level4, level5
+    if (!['level1', 'level2', 'level4', 'level5'].includes(levelKey)) return;
+
     if (!data) return;
 
-    // levels 1–3 : flat object { qid: "answer" }
+    // levels 1 & 2: flat object { qid: "answer" }
     if (!Array.isArray(data) && typeof data === 'object') {
       Object.entries(data as Record<string, any>).forEach(
         ([qid, value]) => pushReadingAnswer(qid, value),
@@ -647,7 +729,7 @@ async handleSubmission(payload: any, userId: string) {
       return;
     }
 
-    // levels 4 & 5 : array of { id, value }
+    // levels 4 & 5: array of { id, value }
     if (Array.isArray(data)) {
       data.forEach((item: any) => {
         if (!item) return;
@@ -660,14 +742,12 @@ async handleSubmission(payload: any, userId: string) {
 
   // ---------- 3) AUDIO answers ----------
 
-  // Primary: boolean array payload.audio
   const audioArray = Array.isArray(payload.audio) ? payload.audio : [];
   audioArray.forEach((a: any) => {
     if (!a) return;
     pushAudioAnswer(a.questionId, a.answer);
   });
 
-  // Fallback: levels.audio { qid: "richtig"/"falsch" }
   const audioLevels = payload.levels?.audio || {};
   if (audioArray.length === 0 && audioLevels && typeof audioLevels === 'object') {
     Object.entries(audioLevels as Record<string, string>).forEach(
@@ -682,30 +762,47 @@ async handleSubmission(payload: any, userId: string) {
   }
 
   // ---------- 4) WRITING answers ----------
-  // payload.writing.answers = [{ questionId, answer }, ...]
-  const writingAnswers = Array.isArray(payload.writing?.answers)
-    ? payload.writing.answers
-    : [];
 
-  writingAnswers.forEach((w: any) => {
-    if (!w) return;
-    if (!w.questionId) return;
-    if (w.answer == null || w.answer === '') return; // only if user wrote something
-    pushWritingAnswer(w.questionId, w.answer);
-  });
+ const writingAnswers = Array.isArray(payload.writing?.answers)
+  ? payload.writing.answers
+  : [];
+
+// tasks meta comes from the payload snippet you showed
+const writingTasksMeta =
+  payload.reading?.answers?.writing?.tasks || {}; // A/B with body/title/subtitle
+
+const findTaskMetaByQid = (qid: string) => {
+  for (const key of Object.keys(writingTasksMeta)) {
+    const t = writingTasksMeta[key];
+    if (t?.qid === qid) return t;
+  }
+  return null;
+};
+
+// we need await here because LLM call is async
+for (const w of writingAnswers) {
+  if (!w) continue;
+  if (!w.questionId) continue;
+  if (w.answer == null || w.answer === '') continue;
+
+  const taskMeta = findTaskMetaByQid(String(w.questionId));
+  await pushWritingAnswer(w.questionId, w.answer, taskMeta);
+}
+
 
   // ---------- 5) Decide status ----------
-  // We now auto-assign points for audio + writing. Reading is not graded yet.
-  const hasReading = Object.keys(readingAnswers || {}).length > 0;
-  const hasAudio = perModuleSummary.audio.maxPoints > 0;
-  const hasWriting = writingAnswers.length > 0;
+
+  const hasReading = perModuleSummary.reading.maxPoints > 0;
+  const hasAudio   = perModuleSummary.audio.maxPoints > 0;
+  const hasWriting = perModuleSummary.writing.maxPoints > 0;
 
   let status: 'graded' | 'partial' | 'pending' = 'pending';
-  if (hasAudio || hasWriting) {
-    status = hasReading ? 'partial' : 'graded';
+  if (hasAudio || hasWriting || hasReading) {
+    status = 'graded';
   }
 
   // ---------- 6) Build & save result document ----------
+
   const doc = {
     testId,
     userId: user,
@@ -722,10 +819,13 @@ async handleSubmission(payload: any, userId: string) {
 
   const created = await this.CourseTestResultModel.create(doc);
 
-  // ---------- 7) Build extra summary for response ----------
+  // ---------- 7) Response summary ----------
+
   const totalQuestions = perQuestion.length;
 
-  const audioSummary = perModuleSummary.audio || { points: 0, maxPoints: 0 };
+  const audioSummary   = perModuleSummary.audio   || { points: 0, maxPoints: 0 };
+  const readingSummary = perModuleSummary.reading || { points: 0, maxPoints: 0 };
+  const writingSummary = perModuleSummary.writing || { points: 0, maxPoints: 0 };
 
   return {
     resultId: created._id,
@@ -734,16 +834,26 @@ async handleSubmission(payload: any, userId: string) {
     submittedAt: created.submittedAt,
     status: created.status,
 
-    // overall
     totalQuestions,
-    totalMarks: maxPoints,   // same as number of questions, because 1 point each
+    totalMarks: maxPoints,
     earnedMarks: totalPoints,
 
-    // audio-only summary
     audio: {
-      totalQuestions: audioSummary.maxPoints, // 1 point per question
+      totalQuestions: audioSummary.maxPoints,
       maxPoints: audioSummary.maxPoints,
       earnedPoints: audioSummary.points,
+    },
+
+    reading: {
+      totalQuestions: readingSummary.maxPoints,
+      maxPoints: readingSummary.maxPoints,
+      earnedPoints: readingSummary.points,
+    },
+
+    writing: {
+      totalQuestions: writingSummary.maxPoints,
+      maxPoints: writingSummary.maxPoints,
+      earnedPoints: writingSummary.points,
     },
 
     perModuleSummary: created.perModuleSummary,
@@ -751,10 +861,14 @@ async handleSubmission(payload: any, userId: string) {
   };
 }
 
+
+/**
+ * Build a map of audio questionId -> correctAnswer (boolean)
+ * questionId format: `${moduleId}_audio_questions_${index}_`
+ */
 private async buildAudioQuestionMap(testId: string) {
-  // Find details & populate moduleRef (CourseModule)
   const details = await this.CourseTestDetailsModel
-    .findOne({ testId })
+    .findOne({ testId: new Types.ObjectId(testId) })
     .populate('modules.moduleRef')
     .lean();
 
@@ -770,17 +884,188 @@ private async buildAudioQuestionMap(testId: string) {
 
     const c: any = modDoc.content;
 
-    // Detect "audio" module by presence of media + questions[]
+    // detect audio module by media + questions[]
     if (c.media && Array.isArray(c.questions)) {
-      c.questions.forEach((q: any) => {
-        if (!q || !q.questionId) return;
-        audioMap.set(String(q.questionId), Boolean(q.correctAnswer));
+      const moduleId = modDoc._id.toString();
+
+      c.questions.forEach((q: any, index: number) => {
+        if (!q) return;
+
+        // MUST match the pattern used in the frontend:
+        // `${moduleId}_audio_questions_${index}_`
+        const questionKey = `${moduleId}_audio_questions_${index}_`;
+
+        audioMap.set(questionKey, Boolean(q.correctAnswer));
       });
     }
   }
 
   return { audioMap, totalAudioQuestions: audioMap.size };
 }
+
+/**
+ * Build a map of reading questionId -> correctAnswer (string)
+ * questionId format (levels 1–3):
+ *   `${moduleId}_reading_paragraphs_${pIndex}_`
+ *
+ * Requires each paragraph to have either:
+ *   - correctOptionIndex: number  (index into content.options[])
+ *   - or correctQuestion: string  (the correct option text)
+ */
+private async buildReadingQuestionMap(testId: string) {
+  const details = await this.CourseTestDetailsModel
+    .findOne({ testId: new Types.ObjectId(testId) })
+    .populate('modules.moduleRef')
+    .lean();
+
+  const readingMap = new Map<string, string>();
+
+  if (!details || !Array.isArray(details.modules)) {
+    return { readingMap };
+  }
+
+  for (const m of details.modules) {
+    const modDoc: any = m.moduleRef;
+    if (!modDoc || !modDoc.content) continue;
+
+    const level = String(modDoc.level);  // "1", "2", "3", "4", "5"
+    const c: any = modDoc.content;
+    const moduleId = modDoc._id.toString();
+
+    // -------- Level 1 --------
+    // content.paragraphs[i].answer is the correct question text
+    if (level === '1' && Array.isArray(c.paragraphs)) {
+      c.paragraphs.forEach((p: any, pIndex: number) => {
+        if (!p || p.answer == null) return;
+        const key = `${moduleId}_reading_paragraphs_${pIndex}_`;
+        readingMap.set(key, String(p.answer));
+      });
+    }
+
+    // -------- Level 2 --------
+    // content.paragraphs[0].questions[i].answer
+    if (level === '2'
+        && Array.isArray(c.paragraphs)
+        && c.paragraphs[0]
+        && Array.isArray(c.paragraphs[0].questions)) {
+
+      const questions = c.paragraphs[0].questions;
+      questions.forEach((q: any, qIndex: number) => {
+        if (!q || q.answer == null) return;
+        const key = `${moduleId}_reading_paragraphs_0_questions_${qIndex}_`;
+        readingMap.set(key, String(q.answer));
+      });
+    }
+
+    // -------- Level 3 --------
+    // you said: "skip level3 because there is question mapping issue"
+    // => we DO NOT add anything for level 3 on purpose
+
+    // -------- Level 4 --------
+    // content.paragraphs[0].blanks[i].answer
+    if (level === '4'
+        && Array.isArray(c.paragraphs)
+        && c.paragraphs[0]
+        && Array.isArray(c.paragraphs[0].blanks)) {
+
+      const blanks = c.paragraphs[0].blanks;
+      blanks.forEach((b: any, bIndex: number) => {
+        if (!b) return;
+        const ans = typeof b === 'string' ? b : b.answer;
+        if (ans == null) return;
+
+        // NOTE: question id here is like "level_4_p0_blanks_0_"
+        const key = `level_4_p0_blanks_${bIndex}_`;
+        readingMap.set(key, String(ans));
+      });
+    }
+
+    // -------- Level 5 --------
+    // content.paragraphs[0].blanks is ["um","und","Nach","bevor"]
+    if (level === '5'
+        && Array.isArray(c.paragraphs)
+        && c.paragraphs[0]
+        && Array.isArray(c.paragraphs[0].blanks)) {
+
+      const blanks = c.paragraphs[0].blanks as string[];
+      blanks.forEach((ans: any, bIndex: number) => {
+        if (ans == null) return;
+        const key = `level_5_p0_blanks_${bIndex}_`;
+        readingMap.set(key, String(ans));
+      });
+    }
+  }
+
+  return { readingMap };
+}
+
+
+
+
+/**
+ * Build a map of writing questionId -> points.
+ *
+ * Uses the writing CourseModule where:
+ *   content.totalPoints = total marks for all tasks (e.g. 10)
+ *   content.task_a.questionId / content.task_b.questionId ...
+ *
+ * Example document (from your screenshot):
+ *   level: "Deutschprüfung B1"
+ *   content: {
+ *     totalPoints: 10,
+ *     task_a: { questionId: "..._writing_task_a", ... },
+ *     task_b: { questionId: "..._writing_task_b", ... }
+ *   }
+ */
+private async buildWritingQuestionMap(testId: string) {
+  const details = await this.CourseTestDetailsModel
+    .findOne({ testId: new Types.ObjectId(testId) })
+    .populate('modules.moduleRef')
+    .lean();
+
+  const writingMap = new Map<string, number>();
+
+  // default if we can't read anything from DB
+  let defaultWritingPoints = 5;
+
+  if (!details || !Array.isArray(details.modules)) {
+    return { writingMap, defaultWritingPoints };
+  }
+
+  for (const m of details.modules) {
+    const modDoc: any = m.moduleRef;
+    if (!modDoc || !modDoc.content) continue;
+
+    const c: any = modDoc.content;
+
+    // detect the writing module by presence of totalPoints + task_a/task_b
+    const tasks: string[] = [];
+
+    if (c.task_a && c.task_a.questionId) {
+      tasks.push(String(c.task_a.questionId));
+    }
+    if (c.task_b && c.task_b.questionId) {
+      tasks.push(String(c.task_b.questionId));
+    }
+
+    if (tasks.length === 0) continue;
+
+    // if totalPoints is present, split evenly across tasks
+    if (typeof c.totalPoints === 'number' && c.totalPoints > 0) {
+      defaultWritingPoints = c.totalPoints / tasks.length;
+    }
+
+    tasks.forEach((qid) => {
+      writingMap.set(qid, defaultWritingPoints);
+    });
+
+    // assuming there is only one writing module, we could break here
+    // break;
+  }
+
+  return { writingMap, defaultWritingPoints };
+}
+
 
 
 

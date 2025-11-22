@@ -8,6 +8,7 @@ import { ConfigModule } from '@nestjs/config';
 import { CourseTestModule } from './course-test/course-test.module';
 import { StudentModule } from './student/student.module';
 
+import { AiWritingEvaluatorService } from './ai-writing-evaluator/ai-writing-evaluator.service';
 
 @Module({
   imports: [
