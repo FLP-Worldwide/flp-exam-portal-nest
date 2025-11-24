@@ -24,7 +24,6 @@ export class StudentController {
 
   @Get('dashboard')
   async getDashboard(@Req() req: any) {
-    console.log('Request Headers:', req.headers);
     try {
       // Extract token from headers
       const authHeader = req.headers.authorization;

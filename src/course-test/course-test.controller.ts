@@ -85,7 +85,6 @@ export class CourseTestController {
     @Post('course-submit')
     async updateTest(@Body() payload: any, @Req() req: any) {
       const authHeader = req.headers?.authorization;
-      console.log('Authorization header (raw):', authHeader);
 
       if (!authHeader || !authHeader.startsWith('Bearer ')) {
         throw new UnauthorizedException('Token missing');
@@ -138,6 +137,26 @@ export class CourseTestController {
         };
       }
 
+
+      @Get('result/:testId')
+      async getResult(@Req() req: any, @Param('testId') testId: string){
+        console.log(req.headers.authorization);
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+                throw new UnauthorizedException('Token missing');
+        }
+
+        const token = authHeader.split(' ')[1];
+        const decoded = this.jwtService.verify(token);
+        const userId = decoded._id || decoded.sub || decoded.userId;
+
+        if (!decoded || !userId) {
+            throw new UnauthorizedException('Invalid token');
+        }
+
+          const result = await this.courseTestService.getResult(userId,testId);
+          return {message:"Test result!", data:result}
+      }
 
     
     // @Delete('')

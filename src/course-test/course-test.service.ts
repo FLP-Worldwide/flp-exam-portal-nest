@@ -531,6 +531,215 @@ async createTestDetails(dto: CourseTestDetailsDto) {
   }
 }
 
+async getResult(userId: string, testId: string) {
+  if (!userId) {
+    throw new BadRequestException('Missing userId');
+  }
+  if (!testId) {
+    throw new BadRequestException('Missing testId');
+  }
+
+  if (!Types.ObjectId.isValid(userId)) {
+    throw new BadRequestException('Invalid userId');
+  }
+  if (!Types.ObjectId.isValid(testId)) {
+    throw new BadRequestException('Invalid testId');
+  }
+
+  const userObjectId = new Types.ObjectId(userId);
+  const testObjectId = new Types.ObjectId(testId);
+
+  // 1) latest result
+  const result = await this.CourseTestResultModel.findOne({
+    userId: userObjectId,
+    testId: testObjectId,
+  })
+    .sort({ submittedAt: -1 })
+    .lean();
+
+  if (!result) {
+    throw new NotFoundException('No result found for this test and user');
+  }
+
+  // 2) test info
+  const test = await this.CourseTestModel.findById(testObjectId).lean();
+
+  // 3) build questionText map for this test
+  const questionTextMap = await this.buildQuestionTextMap(testObjectId.toString());
+
+  // 4) enrich perQuestion with questionText
+const perQuestionWithText = (result.perQuestion || []).map((q: any) => {
+  const qid = String(q.questionId);
+  const baseText = questionTextMap.get(qid) || null;
+
+  let questionText = baseText;
+  let blankIndex: number | null = null;
+
+  // Detect level 4 & 5 blanks: level_4_p0_blanks_0_, level_5_p0_blanks_3_, ...
+  const m = qid.match(/^level_(4|5)_p0_blanks_(\d+)_$/);
+  if (m) {
+    blankIndex = Number(m[2]); // 0,1,2,3,...
+
+    // 👉 Show full paragraph text ONLY for the first blank (index 0)
+    // For other blanks, questionText = null so UI can group them under the same paragraph.
+    if (blankIndex > 0) {
+      questionText = null;
+    }
+  }
+
+  return {
+    ...q,
+    questionText,                     // paragraph text or null for extra blanks
+    ...(blankIndex !== null ? { blankIndex } : {}), // extra info for UI
+  };
+});
+
+
+  const totalPoints: number = result.totalPoints ?? 0;
+  const maxPoints: number = result.maxPoints ?? 0;
+  const percentage =
+    maxPoints > 0 ? Math.round((totalPoints / maxPoints) * 100) : 0;
+
+  return {
+    test: test
+      ? {
+          id: String(test._id),
+          testName: test.testName,
+          language: test.language,
+          duration: test.duration,
+          price: test.price,
+        }
+      : null,
+
+    resultId: String(result._id),
+    testId: String(result.testId),
+    userId: String(result.userId),
+    submittedAt: result.submittedAt,
+    status: result.status,
+
+    totalPoints,
+    maxPoints,
+    percentage,
+
+    perModuleSummary: result.perModuleSummary || {},
+
+    // ⬇️ now each item has questionText
+    perQuestion: perQuestionWithText,
+
+  };
+}
+/**
+ * Build a map questionId -> questionText (for review screen).
+ * Reuses the same questionId patterns used in grading.
+ */
+private async buildQuestionTextMap(testId: string) {
+  const details = await this.CourseTestDetailsModel
+    .findOne({ testId: new Types.ObjectId(testId) })
+    .populate('modules.moduleRef')
+    .lean();
+
+  const map = new Map<string, string>();
+
+  if (!details || !Array.isArray(details.modules)) {
+    return map;
+  }
+
+  for (const m of details.modules) {
+    const modDoc: any = m.moduleRef;
+    if (!modDoc || !modDoc.content) continue;
+
+    const level = String(modDoc.level); // "1", "2", "3", "4", "5", or "Deutschprüfung B1"
+    const c: any = modDoc.content;
+    const moduleId = modDoc._id.toString();
+
+    // ---------- AUDIO ----------
+    if (c.media && Array.isArray(c.questions)) {
+      c.questions.forEach((q: any, index: number) => {
+        if (!q) return;
+        const key = `${moduleId}_audio_questions_${index}_`;
+        const text = q.text || ''; // from your audio schema screenshot
+        map.set(key, String(text));
+      });
+    }
+
+    // ---------- READING LEVEL 1 ----------
+    // each paragraph is a text; questionId = `${moduleId}_reading_paragraphs_${pIndex}_`
+    if (level === '1' && Array.isArray(c.paragraphs)) {
+      c.paragraphs.forEach((p: any, pIndex: number) => {
+        if (!p) return;
+        const key = `${moduleId}_reading_paragraphs_${pIndex}_`;
+        const text = p.paragraph || '';
+        map.set(key, String(text));
+      });
+    }
+
+    // ---------- READING LEVEL 2 ----------
+    // paragraphs[0].questions[i].question; id = `${moduleId}_reading_paragraphs_0_questions_${i}_`
+    if (
+      level === '2' &&
+      Array.isArray(c.paragraphs) &&
+      c.paragraphs[0] &&
+      Array.isArray(c.paragraphs[0].questions)
+    ) {
+      const questions = c.paragraphs[0].questions;
+      questions.forEach((q: any, qIndex: number) => {
+        if (!q) return;
+        const key = `${moduleId}_reading_paragraphs_0_questions_${qIndex}_`;
+        const text = q.question || '';
+        map.set(key, String(text));
+      });
+    }
+
+    // ---------- READING LEVEL 4 ----------
+    // blanks in one paragraph – we show full paragraph text for each blank
+    if (
+      level === '4' &&
+      Array.isArray(c.paragraphs) &&
+      c.paragraphs[0] &&
+      Array.isArray(c.paragraphs[0].blanks)
+    ) {
+      const paragraphText = c.paragraphs[0].paragraph || '';
+      c.paragraphs[0].blanks.forEach((_b: any, bIndex: number) => {
+        const key = `level_4_p0_blanks_${bIndex}_`;
+        map.set(key, String(paragraphText));
+      });
+    }
+
+    // ---------- READING LEVEL 5 ----------
+    // similar: one paragraph with blanks[]
+    if (
+      level === '5' &&
+      Array.isArray(c.paragraphs) &&
+      c.paragraphs[0] &&
+      Array.isArray(c.paragraphs[0].blanks)
+    ) {
+      const paragraphText = c.paragraphs[0].paragraph || '';
+      (c.paragraphs[0].blanks as string[]).forEach((_ans: any, bIndex: number) => {
+        const key = `level_5_p0_blanks_${bIndex}_`;
+        map.set(key, String(paragraphText));
+      });
+    }
+
+    // ---------- WRITING TASKS ----------
+    // questionId stored directly in content.task_a / task_b
+    if (c.task_a && c.task_a.questionId) {
+      const qid = String(c.task_a.questionId);
+      const text =
+        `${c.task_a.title || ''}\n\n${c.task_a.body || ''}`.trim();
+      map.set(qid, text);
+    }
+    if (c.task_b && c.task_b.questionId) {
+      const qid = String(c.task_b.questionId);
+      const text =
+        `${c.task_b.title || ''}\n\n${c.task_b.body || ''}`.trim();
+      map.set(qid, text);
+    }
+  }
+
+  return map;
+}
+
+
 
 
 
@@ -1065,6 +1274,7 @@ private async buildWritingQuestionMap(testId: string) {
 
   return { writingMap, defaultWritingPoints };
 }
+
 
 
 
