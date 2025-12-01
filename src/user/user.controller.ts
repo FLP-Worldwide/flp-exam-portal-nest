@@ -59,5 +59,9 @@ export class UserController {
         const token = await this.jwtService.signAsync(payload)
         return {message:"User Created!", data:{"access_token":token}}
     }
+
+    @Post('buy-test')
+    async buyTestForUser(@Body() body:any){
+    }
 }
 

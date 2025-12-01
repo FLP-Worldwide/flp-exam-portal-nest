@@ -7,8 +7,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { ConfigModule } from '@nestjs/config';
 import { CourseTestModule } from './course-test/course-test.module';
 import { StudentModule } from './student/student.module';
-
-import { AiWritingEvaluatorService } from './ai-writing-evaluator/ai-writing-evaluator.service';
+import { ShopModule } from './shop/shop.module';
 
 @Module({
   imports: [
@@ -17,7 +16,8 @@ import { AiWritingEvaluatorService } from './ai-writing-evaluator/ai-writing-eva
     UserModule,
     MongooseModule.forRoot(process.env.MONGO_URL as string),
     CourseTestModule,
-    StudentModule
+    StudentModule,
+    ShopModule
   ],
   controllers: [AppController],
   providers: [AppService],
