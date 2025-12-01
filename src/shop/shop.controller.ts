@@ -11,6 +11,7 @@ import bcrypt from 'bcrypt';
 import { User } from '../user/schemas/user.schema';
 import { CourseTest } from '../course-test/schemas/course-test.schema';
 import { UserAssignment } from '../user/schemas/userAssignment.schema';
+import { StudentDetails } from 'src/user/schemas/student.schema';
 
 @Controller('shop')
 export class ShopController {
@@ -20,6 +21,7 @@ export class ShopController {
     private readonly courseTestModel: Model<CourseTest>,
     @InjectModel(UserAssignment.name)
     private readonly assignmentModel: Model<UserAssignment>,
+    @InjectModel(StudentDetails.name) private studentDetailsModel:Model<StudentDetails>,
   ) {}
 @Post('buy-test')
 async buyTestForUser(@Body() body: any) {
@@ -59,6 +61,16 @@ async buyTestForUser(@Body() body: any) {
       role: 'student',
     });
   }
+
+  if (user.role === 'student') {
+        const studentDetails = {
+            userId: user._id,
+            enrollmentNo: 'STUD' + Math.floor(100000 + Math.random() * 900000),
+        };
+        const userDetails = await this.studentDetailsModel.create(studentDetails);
+        user.studentDetails = userDetails._id;
+        await user.save();
+    }
 
   // Find existing test assignments
   const existingAssignments = await this.assignmentModel

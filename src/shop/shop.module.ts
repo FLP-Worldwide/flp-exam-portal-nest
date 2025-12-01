@@ -6,6 +6,7 @@ import { User, UserSchema } from '../user/schemas/user.schema';
 import { CourseTest, CourseTestSchema } from 'src/course-test/schemas/course-test.schema';
 import { UserAssignment, UserAssignmentSchema } from 'src/user/schemas/userAssignment.schema';
 import { ShopController } from './shop.controller';
+import { StudentDetails, StudentDetailsSchema } from 'src/user/schemas/student.schema';
 
 @Module({
   imports:[MongooseModule.forFeature(
@@ -13,6 +14,7 @@ import { ShopController } from './shop.controller';
       { name: User.name, schema: UserSchema },
       { name: CourseTest.name, schema: CourseTestSchema },
       { name: UserAssignment.name, schema: UserAssignmentSchema },
+      { name: StudentDetails.name, schema: StudentDetailsSchema },
     ])],
   providers: [],
   exports:[],
