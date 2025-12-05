@@ -75,7 +75,7 @@ export class ShopController {
 
     // Razorpay order options (yahan koi Razorpay.* type use nahi kiya)
     const options = {
-      amount, // paise me
+      amount: amount * 100, // paise me
       currency: 'INR',
       receipt: `order_rcpt_${Date.now()}`,
       notes: {
