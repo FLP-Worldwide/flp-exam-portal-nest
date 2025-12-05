@@ -49,7 +49,7 @@ export class ShopController {
   // INR me prices (example, apne hisaab se change kar sakte ho)
   // amount paise me (e.g. 199 = 19900)
   private PACK_PRICES: Record<string, number> = {
-    'pack-1': 1,
+    'pack-1': 500,
     'pack-3': 1200,
     'pack-5': 1750,
     'pack-10': 3000,
